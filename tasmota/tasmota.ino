@@ -381,24 +381,34 @@ void loop(void) {
 
   XdrvCall(FUNC_LOOP);
   XsnsCall(FUNC_LOOP);
+  yield();
 
   OsWatchLoop();
+  yield();
 
   ButtonLoop();
+  yield();
+
   SwitchLoop();
+  yield();
+  
 #ifdef USE_DEVICE_GROUPS
   DeviceGroupsLoop();
+  yield();
 #endif  // USE_DEVICE_GROUPS
   BacklogLoop();
+  yield();
 
   static uint32_t state_50msecond = 0;               // State 50msecond timer
   if (TimeReached(state_50msecond)) {
     SetNextTimeInterval(state_50msecond, 50);
 #ifdef ROTARY_V1
     RotaryHandler();
+	yield();
 #endif  // ROTARY_V1
     XdrvCall(FUNC_EVERY_50_MSECOND);
     XsnsCall(FUNC_EVERY_50_MSECOND);
+	yield();
   }
 
   static uint32_t state_100msecond = 0;              // State 100msecond timer
@@ -407,6 +417,7 @@ void loop(void) {
     Every100mSeconds();
     XdrvCall(FUNC_EVERY_100_MSECOND);
     XsnsCall(FUNC_EVERY_100_MSECOND);
+	yield();
   }
 
   static uint32_t state_250msecond = 0;              // State 250msecond timer
@@ -415,6 +426,7 @@ void loop(void) {
     Every250mSeconds();
     XdrvCall(FUNC_EVERY_250_MSECOND);
     XsnsCall(FUNC_EVERY_250_MSECOND);
+	yield();
   }
 
   static uint32_t state_second = 0;                  // State second timer
@@ -423,18 +435,20 @@ void loop(void) {
     PerformEverySecond();
     XdrvCall(FUNC_EVERY_SECOND);
     XsnsCall(FUNC_EVERY_SECOND);
+	yield();
   }
 
   if (!TasmotaGlobal.serial_local) { SerialInput(); }
 
 #ifdef USE_ARDUINO_OTA
   ArduinoOtaLoop();
+  yield();
 #endif  // USE_ARDUINO_OTA
 
   uint32_t my_activity = millis() - my_sleep;
 
   if (Settings.flag3.sleep_normal) {               // SetOption60 - Enable normal sleep instead of dynamic sleep
-    //  yield();                                   // yield == delay(0), delay contains yield, auto yield in loop
+    yield();                                   // yield == delay(0), delay contains yield, auto yield in loop
     SleepDelay(TasmotaGlobal.sleep);                            // https://github.com/esp8266/Arduino/issues/2021
   } else {
     if (my_activity < (uint32_t)TasmotaGlobal.sleep) {
