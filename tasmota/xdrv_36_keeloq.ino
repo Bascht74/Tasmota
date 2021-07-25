@@ -40,6 +40,9 @@
 const char kJaroliftCommands[] PROGMEM = "Keeloq|" // prefix
   "SendRaw|SendButton|Set";
 
+const char rfraw_start[] PROGMEM = "AAB0610508064001900FA003203E8048191919191919191919191919192"; // prefix of the portisch B0-Code for Sonoff RF Bridge
+char rfrawB0[204];
+
 void (* const jaroliftCommand[])(void) PROGMEM = {
   &CmndSendRaw, &CmdSendButton, &CmdSet};
 
@@ -72,7 +75,7 @@ void CmdSet(void)
       for (uint32_t i = 0; i < 3; i++) {
         if (param[i] < 1) { param[i] = 1; }  // msb, lsb, serial, counter
       }
-      DEBUG_DRIVER_LOG(LOG_LEVEL_DEBUG_MORE, PSTR("params: %08x %08x %08x %08x"), param[0], param[1], param[2], param[3]);
+      DEBUG_DRIVER_LOG(PSTR("params: %08x %08x %08x %08x"), param[0], param[1], param[2], param[3]);
       Settings->keeloq_master_msb = param[0];
       Settings->keeloq_master_lsb = param[1];
       Settings->keeloq_serial = param[2];
@@ -84,10 +87,10 @@ void CmdSet(void)
       GenerateDeviceCryptKey();
       ResponseCmndDone();
     } else {
-      DEBUG_DRIVER_LOG(LOG_LEVEL_DEBUG_MORE, PSTR("no payload"));
+      DEBUG_DRIVER_LOG(PSTR("no payload"));
     }
   } else {
-    DEBUG_DRIVER_LOG(LOG_LEVEL_DEBUG_MORE, PSTR("no param"));
+    DEBUG_DRIVER_LOG(PSTR("no param"));
   }
 }
 
@@ -102,48 +105,90 @@ void GenerateDeviceCryptKey()
 
 void CmdSendButton(void)
 {
-  noInterrupts();
-  entertx();
-
   if (XdrvMailbox.data_len > 0)
   {
     if (XdrvMailbox.payload > 0)
     {
       jaroliftDevice.button = strtoul(XdrvMailbox.data, nullptr, 0);
-      DEBUG_DRIVER_LOG(LOG_LEVEL_DEBUG_MORE, PSTR("msb: %08x"), jaroliftDevice.device_key_msb);
-      DEBUG_DRIVER_LOG(LOG_LEVEL_DEBUG_MORE, PSTR("lsb: %08x"), jaroliftDevice.device_key_lsb);
-      DEBUG_DRIVER_LOG(LOG_LEVEL_DEBUG_MORE, PSTR("serial: %08x"), jaroliftDevice.serial);
-      DEBUG_DRIVER_LOG(LOG_LEVEL_DEBUG_MORE, PSTR("disc: %08x"), jaroliftDevice.disc);
+      DEBUG_DRIVER_LOG(PSTR("msb: %08x"), jaroliftDevice.device_key_msb);
+      DEBUG_DRIVER_LOG(PSTR("lsb: %08x"), jaroliftDevice.device_key_lsb);
+      DEBUG_DRIVER_LOG(PSTR("serial: %08x"), jaroliftDevice.serial);
+      DEBUG_DRIVER_LOG(PSTR("disc: %08x"), jaroliftDevice.disc);
       AddLog(LOG_LEVEL_DEBUG, PSTR("KLQ: count: %08x"), jaroliftDevice.count);
-
+      
       CreateKeeloqPacket();
       jaroliftDevice.count++;
       Settings->keeloq_count = jaroliftDevice.count;
+  
+      if (PinUsed(GPIO_CC1101_GDO0) && PinUsed(GPIO_CC1101_GDO2))
+      {
+        noInterrupts();
+        entertx();
+      
+        for(int repeat = 0; repeat <= 1; repeat++)
+        {
+          uint64_t bitsToSend = jaroliftDevice.pack;
+  
+          if (PinUsed(GPIO_CC1101_GDO0) && PinUsed(GPIO_CC1101_GDO2))
+          {
+            digitalWrite(jaroliftDevice.port_tx, LOW);
+          }
 
-      for(int repeat = 0; repeat <= 1; repeat++)
+          delayMicroseconds(1150);
+          SendSyncPreamble(13);
+          delayMicroseconds(3500);
+
+          for(int i=72; i>0; i--)
+          {
+            SendBit(bitsToSend & 0x0000000000000001);
+            bitsToSend >>= 1;
+          }
+
+          DEBUG_DRIVER_LOG(PSTR("finished sending bits at %d"), micros());
+
+          delay(16); // delay in loop context is save for wdt
+        }
+     
+        interrupts();
+        enterrx();
+      }
+
+      if (SONOFF_BRIDGE == TasmotaGlobal.module_type)
       {
         uint64_t bitsToSend = jaroliftDevice.pack;
-        digitalWrite(jaroliftDevice.port_tx, LOW);
-        delayMicroseconds(1150);
-        SendSyncPreamble(13);
-        delayMicroseconds(3500);
+
+        // generate prefix
+        strncpy(rfrawB0, rfraw_start, sizeof(rfrawB0));
+
         for(int i=72; i>0; i--)
         {
-          SendBit(bitsToSend & 0x0000000000000001);
+          if (bitsToSend & 0x0000000000000001 == 1) {
+            strncat (rfrawB0, "93", 2);}
+          else {
+            strncat (rfrawB0, "B1", 2);}
+
           bitsToSend >>= 1;
         }
-        DEBUG_DRIVER_LOG(LOG_LEVEL_DEBUG_MORE, PSTR("finished sending bits at %d"), micros());
 
-        delay(16); // delay in loop context is save for wdt
+        rfrawB0[strlen(rfrawB0)-1] = '\0'; // remove last char
+        strncat (rfrawB0, "55", 9); // add End of text
+
+        DEBUG_DRIVER_LOG(PSTR("created B0 code: %s"), rfrawB0);
+ 
+        //send raw data to RF bridge
+        SerialSendRaw(RemoveSpace(rfrawB0)); // send the B0 data
+
+        //return to normal mode
+        Serial.write(0xAA);  // Start of Text
+        Serial.write(0xA7);  // Stop reading RF signals enabling iTead default RF handling
+        Serial.write(0x55);  // End of Text
       }
     }
   }
 
-  interrupts();
-  enterrx();
-
   ResponseCmndDone();
 }
+
 
 void SendBit(byte bitToSend)
 {
@@ -165,30 +210,39 @@ void SendBit(byte bitToSend)
 
 void CmndSendRaw(void)
 {
-  DEBUG_DRIVER_LOG(LOG_LEVEL_DEBUG_MORE, PSTR("cmd send called at %d"), micros());
-  noInterrupts();
-  entertx();
-  for(int repeat = 0; repeat <= 1; repeat++)
+  if (PinUsed(GPIO_CC1101_GDO0) && PinUsed(GPIO_CC1101_GDO2))
   {
-    if (XdrvMailbox.data_len > 0)
+    DEBUG_DRIVER_LOG(PSTR("cmd send called at %d"), micros());
+    noInterrupts();
+    entertx();
+    for(int repeat = 0; repeat <= 1; repeat++)
     {
-      digitalWrite(jaroliftDevice.port_tx, LOW);
-      delayMicroseconds(1150);
-      SendSyncPreamble(13);
-      delayMicroseconds(3500);
-
-      for(int i=XdrvMailbox.data_len-1; i>=0; i--)
+      if (XdrvMailbox.data_len > 0)
       {
-        SendBit(XdrvMailbox.data[i] == '1');
-      }
-      DEBUG_DRIVER_LOG(LOG_LEVEL_DEBUG_MORE, PSTR("finished sending bits at %d"), micros());
+        digitalWrite(jaroliftDevice.port_tx, LOW);
+        delayMicroseconds(1150);
+        SendSyncPreamble(13);
+        delayMicroseconds(3500);
+  
+        for(int i=XdrvMailbox.data_len-1; i>=0; i--)
+        {
+          SendBit(XdrvMailbox.data[i] == '1');
+        }
+        DEBUG_DRIVER_LOG(PSTR("finished sending bits at %d"), micros());
 
-      delay(16);                       // delay in loop context is save for wdt
+        delay(16);                       // delay in loop context is save for wdt
+      }
+      interrupts();
     }
-    interrupts();
+    enterrx();
+
+    ResponseCmndDone();
   }
-  enterrx();
-  ResponseCmndDone();
+  else
+  {
+    ResponseCmndChar_P(PSTR("Only supported with CC1101"));
+  }
+
 }
 
 void enterrx() {
@@ -242,19 +296,22 @@ void CreateKeeloqPacket()
 
 void KeeloqInit()
 {
-  jaroliftDevice.port_tx = Pin(GPIO_CC1101_GDO2);              // Output port for transmission
-  jaroliftDevice.port_rx = Pin(GPIO_CC1101_GDO0);              // Input port for reception
+  if (PinUsed(GPIO_CC1101_GDO0) && PinUsed(GPIO_CC1101_GDO2))
+  {
+    jaroliftDevice.port_tx = Pin(GPIO_CC1101_GDO2);              // Output port for transmission
+    jaroliftDevice.port_rx = Pin(GPIO_CC1101_GDO0);              // Input port for reception
 
-  DEBUG_DRIVER_LOG(LOG_LEVEL_DEBUG_MORE, PSTR("cc1101.init()"));
-  delay(100);
-  cc1101.init();
-  AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("CC1101 done."));
-  cc1101.setSyncWord(SYNC_WORD, false);
-  cc1101.setCarrierFreq(CFREQ_433);
-  cc1101.disableAddressCheck();
+    DEBUG_DRIVER_LOG(PSTR("cc1101.init()"));
+    delay(100);
+    cc1101.init();
+    AddLog(LOG_LEVEL_DEBUG_MORE, PSTR("CC1101 done."));
+    cc1101.setSyncWord(SYNC_WORD, false);
+    cc1101.setCarrierFreq(CFREQ_433);
+    cc1101.disableAddressCheck();
 
-  pinMode(jaroliftDevice.port_tx, OUTPUT);
-  pinMode(jaroliftDevice.port_rx, INPUT_PULLUP);
+    pinMode(jaroliftDevice.port_tx, OUTPUT);
+    pinMode(jaroliftDevice.port_rx, INPUT_PULLUP);
+  }
 
   jaroliftDevice.serial = Settings->keeloq_serial;
   jaroliftDevice.count = Settings->keeloq_count;
@@ -266,7 +323,7 @@ void KeeloqInit()
 \*********************************************************************************************/
 bool Xdrv36(uint8_t function)
 {
-  if (!PinUsed(GPIO_CC1101_GDO0) || !PinUsed(GPIO_CC1101_GDO2)) { return false; }
+  if ((!PinUsed(GPIO_CC1101_GDO0) || !PinUsed(GPIO_CC1101_GDO2)) && SONOFF_BRIDGE != TasmotaGlobal.module_type) { return false; }
 
   bool result = false;
 
@@ -277,7 +334,7 @@ bool Xdrv36(uint8_t function)
       break;
     case FUNC_INIT:
       KeeloqInit();
-      DEBUG_DRIVER_LOG(LOG_LEVEL_DEBUG_MORE, PSTR("init done."));
+      DEBUG_DRIVER_LOG(PSTR("init done."));
       break;
   }
 
